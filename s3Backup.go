@@ -61,6 +61,7 @@ func NewProgressTrackingReader(file *os.File, report ProgressFunc) *ProgressTrac
 
 func main() {
 	awsProfilePtr := flag.String("profile", "", "AWS profile (optional)")
+	s3Accelerate := flag.Bool("accelerate", false, "Use S3 acceleration")
 	flag.Parse()
 
 	if flag.NArg() != 2 {
@@ -80,7 +81,16 @@ func main() {
 		log.Fatal("Unable to create AWS config")
 	}
 
-	s3Client := s3.NewFromConfig(cfg)
+	var s3Options []func(*s3.Options)
+	if s3Accelerate != nil && *s3Accelerate {
+		s3Options = []func(*s3.Options){
+			func(options *s3.Options) {
+				options.UseAccelerate = true
+			},
+		}
+	}
+
+	s3Client := s3.NewFromConfig(cfg, s3Options...)
 	doBackup(s3Client, flag.Arg(0), flag.Arg(1))
 }
 
