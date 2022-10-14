@@ -7,10 +7,10 @@ import (
 	"flag"
 	"fmt"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 	"io"
 	"log"
@@ -188,9 +188,10 @@ func Upload(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName string
 					}
 				} else {
 					var oe *smithy.OperationError
-					var s3Err *types.NotFound
-					if !errors.As(err, &oe) || !errors.As(oe.Err, &s3Err) {
-						fmt.Printf("Unable to retrieve s3 object metadata for key %s\n", s3Key)
+					var s3Err *http.ResponseError
+
+					if !errors.As(err, &oe) || !errors.As(oe.Err, &s3Err) || s3Err.Response.StatusCode != 404 {
+						fmt.Printf("Unable to retrieve s3 object metadata for key %s [%s]\n", s3Key, err.Error())
 						return
 					}
 				}
