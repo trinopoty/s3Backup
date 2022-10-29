@@ -62,6 +62,7 @@ func NewProgressTrackingReader(file *os.File, report ProgressFunc) *ProgressTrac
 func main() {
 	awsProfilePtr := flag.String("profile", "", "AWS profile (optional)")
 	s3Accelerate := flag.Bool("accelerate", false, "Use S3 acceleration")
+	forceHashCheck := flag.Bool("force-hash", false, "Force hash check (optional)")
 	flag.Parse()
 
 	if flag.NArg() != 2 {
@@ -91,10 +92,10 @@ func main() {
 	}
 
 	s3Client := s3.NewFromConfig(cfg, s3Options...)
-	doBackup(s3Client, flag.Arg(0), flag.Arg(1))
+	doBackup(s3Client, flag.Arg(0), flag.Arg(1), *forceHashCheck)
 }
 
-func doBackup(s3Client *s3.Client, source string, destination string) {
+func doBackup(s3Client *s3.Client, source string, destination string, forceHashCheck bool) {
 	if !strings.HasPrefix(destination, "s3://") {
 		fmt.Println("Backup destination is not s3")
 		os.Exit(1)
@@ -139,10 +140,10 @@ func doBackup(s3Client *s3.Client, source string, destination string) {
 		}
 	}
 
-	Upload(s3Client, manager.NewUploader(s3Client), s3Url.Host, s3Key, srcFile)
+	Upload(s3Client, manager.NewUploader(s3Client), s3Url.Host, s3Key, srcFile, forceHashCheck)
 }
 
-func Upload(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName string, s3Key string, srcFile string) {
+func Upload(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName string, s3Key string, srcFile string, forceHashCheck bool) {
 	if strings.HasPrefix(s3Key, "/") {
 		s3Key = s3Key[1:]
 	}
@@ -153,7 +154,7 @@ func Upload(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName string
 		if files, err := os.ReadDir(srcFile); err == nil {
 			for _, f := range files {
 				f := f.Name()
-				Upload(s3Client, s3Uploader, bucketName, s3Key+"/"+f, path.Join(srcFile, f))
+				Upload(s3Client, s3Uploader, bucketName, s3Key+"/"+f, path.Join(srcFile, f), forceHashCheck)
 			}
 		} else {
 			fmt.Printf("Unable to get files in directory %s\n", srcFile)
@@ -176,7 +177,7 @@ func Upload(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName string
 				fmt.Printf("Unable to retrieve s3 object metadata for key %s [%s]\n", s3Key, err.Error())
 				return
 			}
-		} else if !objectHeadResponse.DeleteMarker && info.Size() == objectHeadResponse.ContentLength {
+		} else if !forceHashCheck && !objectHeadResponse.DeleteMarker && info.Size() == objectHeadResponse.ContentLength {
 			if val, ok := objectHeadResponse.Metadata["modified-timestamp"]; ok {
 				exists = exists || (val == modTime)
 			}
