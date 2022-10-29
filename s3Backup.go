@@ -61,7 +61,7 @@ func NewProgressTrackingReader(file *os.File, report ProgressFunc) *ProgressTrac
 
 func main() {
 	awsProfilePtr := flag.String("profile", "", "AWS profile (optional)")
-	s3Accelerate := flag.Bool("accelerate", false, "Use S3 acceleration")
+	s3Accelerate := flag.Bool("accelerate", false, "Use S3 acceleration (optional)")
 	forceHashCheck := flag.Bool("force-hash", false, "Force hash check (optional)")
 	flag.Parse()
 
