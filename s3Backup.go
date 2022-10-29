@@ -161,73 +161,102 @@ func Upload(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName string
 	} else {
 		fmt.Printf("Uploading %s to %s\n", srcFile, s3Key)
 
-		if f, err := os.Open(srcFile); err != nil {
-			fmt.Printf("Unable to open file %s\n", srcFile)
+		modTime := info.ModTime().Format("2006-01-02 15:04:05")
+
+		exists := false
+		objectHeadResponse, err := s3Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
+			Bucket: aws.String(bucketName),
+			Key:    aws.String(s3Key),
+		})
+		if err != nil {
+			var oe *smithy.OperationError
+			var s3Err *http.ResponseError
+
+			if !errors.As(err, &oe) || !errors.As(oe.Err, &s3Err) || s3Err.Response.StatusCode != 404 {
+				fmt.Printf("Unable to retrieve s3 object metadata for key %s [%s]\n", s3Key, err.Error())
+				return
+			}
+		} else if !objectHeadResponse.DeleteMarker && info.Size() == objectHeadResponse.ContentLength {
+			if val, ok := objectHeadResponse.Metadata["modified-timestamp"]; ok {
+				exists = exists || (val == modTime)
+			}
+		}
+
+		if exists {
+			fmt.Printf("%s already exists. Skipping...\n", s3Key)
+			return
+		}
+
+		err, hash := GetFileHash(srcFile)
+		if err != nil {
+			fmt.Println(err.Error())
+			return
+		}
+
+		if objectHeadResponse != nil && !objectHeadResponse.DeleteMarker && info.Size() == objectHeadResponse.ContentLength {
+			if val, ok := objectHeadResponse.Metadata["sha256"]; ok {
+				exists = exists || (val == *hash)
+			}
+		}
+
+		metadata := make(map[string]string)
+		metadata["modified-timestamp"] = modTime
+		metadata["sha256"] = *hash
+
+		if exists {
+			// Update metadata
+			fmt.Printf("%s already exists. Updating metadata...\n", s3Key)
+			s3Client.CopyObject(context.TODO(), &s3.CopyObjectInput{
+				Bucket:     aws.String(bucketName),
+				CopySource: aws.String(s3Key),
+				Key:        aws.String(s3Key),
+				Metadata:   metadata,
+			})
 		} else {
-			defer f.Close()
-
-			hash := sha256.New()
-			if _, err := io.Copy(hash, f); err != nil {
-				fmt.Printf("Unable to read file %s", srcFile)
+			// Upload file
+			if f, err := os.Open(srcFile); err != nil {
+				fmt.Printf("Unable to open file %s\n", srcFile)
 			} else {
-				modTime := info.ModTime().Format("2006-01-02 15:04:05")
-				hash := fmt.Sprintf("%x", hash.Sum(nil))
+				defer f.Close()
 
-				exists := false
-				if response, err := s3Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
-					Bucket: aws.String(bucketName),
-					Key:    aws.String(s3Key),
-				}); err == nil {
-					if !response.DeleteMarker {
-						if val, ok := response.Metadata["modified-timestamp"]; ok {
-							exists = exists || (val == modTime)
-						}
-						if val, ok := response.Metadata["sha256"]; ok {
-							exists = exists || (val == hash)
-						}
-					}
-				} else {
-					var oe *smithy.OperationError
-					var s3Err *http.ResponseError
+				s3Body := NewProgressTrackingReader(f, func(totalRead int64, speed float32) {
+					percentDone := int(math.Floor(float64(100*totalRead) / float64(info.Size())))
+					fmt.Printf("\r[%s%s] %d %% (%s/%s)",
+						strings.Repeat("=", percentDone),
+						strings.Repeat(" ", 100-percentDone),
+						percentDone,
+						FormatSize(float64(totalRead)),
+						FormatSize(float64(info.Size())))
+				})
 
-					if !errors.As(err, &oe) || !errors.As(oe.Err, &s3Err) || s3Err.Response.StatusCode != 404 {
-						fmt.Printf("Unable to retrieve s3 object metadata for key %s [%s]\n", s3Key, err.Error())
-						return
-					}
-				}
+				_, err := s3Uploader.Upload(context.TODO(), &s3.PutObjectInput{
+					Bucket:   aws.String(bucketName),
+					Key:      aws.String(s3Key),
+					Body:     s3Body,
+					Metadata: metadata,
+				})
 
-				if !exists {
-					f.Seek(0, io.SeekStart)
-
-					metadata := make(map[string]string)
-					metadata["modified-timestamp"] = modTime
-					metadata["sha256"] = hash
-
-					s3Body := NewProgressTrackingReader(f, func(totalRead int64, speed float32) {
-						percentDone := int(math.Floor(float64(100*totalRead) / float64(info.Size())))
-						fmt.Printf("\r[%s%s] %d %% (%s/%s)",
-							strings.Repeat("=", percentDone),
-							strings.Repeat(" ", 100-percentDone),
-							percentDone,
-							FormatSize(float64(totalRead)),
-							FormatSize(float64(info.Size())))
-					})
-
-					_, err := s3Uploader.Upload(context.TODO(), &s3.PutObjectInput{
-						Bucket:   aws.String(bucketName),
-						Key:      aws.String(s3Key),
-						Body:     s3Body,
-						Metadata: metadata,
-					})
-
-					fmt.Printf("\n")
-					if err != nil {
-						fmt.Printf("Unable to upload %s\n", srcFile)
-					}
-				} else {
-					fmt.Printf("%s already exists. Skipping...\n", s3Key)
+				fmt.Printf("\n")
+				if err != nil {
+					fmt.Printf("Unable to upload %s\n", srcFile)
 				}
 			}
+		}
+	}
+}
+
+func GetFileHash(file string) (error, *string) {
+	if f, err := os.Open(file); err != nil {
+		return errors.New(fmt.Sprintf("Unable to open file %s\n", file)), nil
+	} else {
+		defer f.Close()
+
+		hash := sha256.New()
+		if _, err := io.Copy(hash, f); err != nil {
+			return errors.New(fmt.Sprintf("Unable to read file %s", file)), nil
+		} else {
+			hash := fmt.Sprintf("%x", hash.Sum(nil))
+			return nil, &hash
 		}
 	}
 }
