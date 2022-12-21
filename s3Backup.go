@@ -159,6 +159,8 @@ func Upload(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName string
 		} else {
 			fmt.Printf("Unable to get files in directory %s\n", srcFile)
 		}
+	} else if info.Mode()&os.ModeType != 0 {
+		fmt.Printf("%s is an irregular file. Skipping...\n", srcFile)
 	} else {
 		fmt.Printf("Uploading %s to %s\n", srcFile, s3Key)
 
