@@ -271,7 +271,7 @@ func FormatSize(size float64) string {
 
 	for true {
 		if size < 1024 || (idx+1) >= len(suffixes) {
-			return fmt.Sprintf("%d %s", int(math.Floor(size)), suffixes[idx])
+			return fmt.Sprintf("%.2f %s", size, suffixes[idx])
 		} else {
 			size /= 1024
 			idx += 1
