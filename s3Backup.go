@@ -207,12 +207,15 @@ func Upload(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName string
 		if exists {
 			// Update metadata
 			fmt.Printf("%s already exists. Updating metadata...\n", s3Key)
-			s3Client.CopyObject(context.TODO(), &s3.CopyObjectInput{
+			_, err = s3Client.CopyObject(context.TODO(), &s3.CopyObjectInput{
 				Bucket:     aws.String(bucketName),
 				CopySource: aws.String(s3Key),
 				Key:        aws.String(s3Key),
 				Metadata:   metadata,
 			})
+			if err != nil {
+				fmt.Printf("Unable to update metadata for %s\n", s3Key)
+			}
 		} else {
 			// Upload file
 			if f, err := os.Open(srcFile); err != nil {
