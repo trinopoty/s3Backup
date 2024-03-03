@@ -25,6 +25,7 @@ import (
 )
 
 var WindowsSystemFiles = []string{"$RECYCLE.BIN", "desktop.ini"}
+var DarwinSystemFiles = []string{".DS_Store"}
 
 func FormatSize(size float64) string {
 	suffixes := []string{"B", "KB", "MB", "GB", "TB"}
@@ -176,6 +177,10 @@ func Upload(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName string
 	ignoredNames := map[string]bool{}
 	if runtime.GOOS == "windows" {
 		for _, item := range WindowsSystemFiles {
+			ignoredNames[item] = true
+		}
+	} else if runtime.GOOS == "darwin" {
+		for _, item := range DarwinSystemFiles {
 			ignoredNames[item] = true
 		}
 	}
