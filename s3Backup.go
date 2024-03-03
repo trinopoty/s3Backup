@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 	"io"
 	"log"
@@ -73,8 +74,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	var s3Client = CreateS3ClientFromArgs(awsProfilePtr, s3Accelerate)
-	var s3Host, s3Key, srcFile = SanitizePaths(flag.Arg(0), flag.Arg(1))
+	s3Client := CreateS3ClientFromArgs(awsProfilePtr, s3Accelerate)
+	s3Host, s3Key, srcFile := SanitizePaths(flag.Arg(0), flag.Arg(1))
 
 	Upload(s3Client, manager.NewUploader(s3Client), s3Host, s3Key, srcFile, *forceHashCheck)
 }
@@ -153,7 +154,7 @@ func SanitizePaths(source string, destination string) (s3Bucket string, s3Key st
 }
 
 func Upload(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName string, s3Key string, srcFile string, forceHashCheck bool) {
-	var ignoredNames = map[string]bool{}
+	ignoredNames := map[string]bool{}
 	if runtime.GOOS == "windows" {
 		for _, item := range WindowsSystemFiles {
 			ignoredNames[item] = true
@@ -189,7 +190,9 @@ func UploadFile(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName st
 
 	modTime := info.ModTime().Format("2006-01-02 15:04:05")
 
-	exists := false
+	var exists = false
+	var tagResponse *s3.GetObjectTaggingOutput = nil
+
 	headObjectResponse, err := s3Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
 		Bucket: aws.String(bucketName),
 		Key:    aws.String(s3Key),
@@ -203,8 +206,17 @@ func UploadFile(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName st
 			return
 		}
 	} else if !forceHashCheck && !headObjectResponse.DeleteMarker && info.Size() == headObjectResponse.ContentLength {
-		if val, ok := headObjectResponse.Metadata["modified-timestamp"]; ok {
-			exists = exists || (val == modTime)
+		tagResponse, _ = s3Client.GetObjectTagging(context.TODO(), &s3.GetObjectTaggingInput{
+			Bucket: aws.String(bucketName),
+			Key:    aws.String(s3Key),
+		})
+		if tagResponse != nil {
+			for _, tag := range tagResponse.TagSet {
+				if *tag.Key == "modified-timestamp" {
+					exists = exists || (*tag.Value == modTime)
+					break
+				}
+			}
 		}
 	}
 
@@ -213,7 +225,7 @@ func UploadFile(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName st
 		return
 	}
 
-	err, hash := GetFileHash(srcFile)
+	hash, err := GetFileHash(srcFile)
 	if err != nil {
 		fmt.Println(err.Error())
 		return
@@ -226,25 +238,26 @@ func UploadFile(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName st
 	}
 
 	metadata := make(map[string]string)
-	metadata["modified-timestamp"] = modTime
 	metadata["sha256"] = *hash
 
-	if exists {
-		// Update metadata
-		fmt.Printf("%s already exists. Updating metadata...\n", s3Key)
-		_, err = s3Client.CopyObject(context.TODO(), &s3.CopyObjectInput{
-			Bucket:     aws.String(bucketName),
-			CopySource: aws.String(s3Key),
-			Key:        aws.String(s3Key),
-			Metadata:   metadata,
-		})
-		if err != nil {
-			fmt.Printf("Unable to update metadata for %s\n", s3Key)
+	var tags = make([]types.Tag, 0)
+	if tagResponse != nil {
+		for _, tag := range tagResponse.TagSet {
+			if *tag.Key != "modified-timestamp" {
+				tags = append(tags, tag)
+			}
 		}
-	} else {
+	}
+	tags = append(tags, types.Tag{
+		Key:   aws.String("modified-timestamp"),
+		Value: aws.String(modTime),
+	})
+
+	if !exists {
 		// Upload file
 		if f, err := os.Open(srcFile); err != nil {
 			fmt.Printf("Unable to open file %s\n", srcFile)
+			return
 		} else {
 			defer f.Close()
 
@@ -268,23 +281,38 @@ func UploadFile(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName st
 			fmt.Printf("\n")
 			if err != nil {
 				fmt.Printf("Unable to upload %s\n", srcFile)
+				return
 			}
 		}
+	} else {
+		// Update metadata
+		fmt.Printf("%s already exists. Updating tags...\n", s3Key)
+	}
+
+	_, err = s3Client.PutObjectTagging(context.TODO(), &s3.PutObjectTaggingInput{
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(s3Key),
+		Tagging: &types.Tagging{
+			TagSet: tags,
+		},
+	})
+	if err != nil {
+		fmt.Printf("Unable to update tag for %s\n", s3Key)
 	}
 }
 
-func GetFileHash(file string) (error, *string) {
+func GetFileHash(file string) (*string, error) {
 	if f, err := os.Open(file); err != nil {
-		return errors.New(fmt.Sprintf("Unable to open file %s\n", file)), nil
+		return nil, errors.New(fmt.Sprintf("Unable to open file %s\n", file))
 	} else {
 		defer f.Close()
 
 		hash := sha256.New()
 		if _, err := io.Copy(hash, f); err != nil {
-			return errors.New(fmt.Sprintf("Unable to read file %s", file)), nil
+			return nil, errors.New(fmt.Sprintf("Unable to read file %s", file))
 		} else {
 			hash := fmt.Sprintf("%x", hash.Sum(nil))
-			return nil, &hash
+			return &hash, nil
 		}
 	}
 }
