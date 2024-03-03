@@ -229,7 +229,7 @@ func UploadFile(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName st
 			fmt.Printf("Unable to retrieve s3 object metadata for key %s [%s]\n", s3Key, err.Error())
 			return
 		}
-	} else if !forceHashCheck && !headObjectResponse.DeleteMarker && info.Size() == headObjectResponse.ContentLength {
+	} else if !forceHashCheck && !(*headObjectResponse.DeleteMarker) && info.Size() == *headObjectResponse.ContentLength {
 		tagResponse, _ = s3Client.GetObjectTagging(context.TODO(), &s3.GetObjectTaggingInput{
 			Bucket: aws.String(bucketName),
 			Key:    aws.String(s3Key),
@@ -255,7 +255,7 @@ func UploadFile(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName st
 		return
 	}
 
-	if headObjectResponse != nil && !headObjectResponse.DeleteMarker && info.Size() == headObjectResponse.ContentLength {
+	if headObjectResponse != nil && !(*headObjectResponse.DeleteMarker) && info.Size() == *headObjectResponse.ContentLength {
 		if val, ok := headObjectResponse.Metadata["sha256"]; ok {
 			exists = exists || (val == *hash)
 		}
