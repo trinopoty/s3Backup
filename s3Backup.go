@@ -271,7 +271,7 @@ func FormatSize(size float64) string {
 	suffixes := []string{"B", "KB", "MB", "GB", "TB"}
 	idx := 0
 
-	for true {
+	for {
 		if size < 1024 || (idx+1) >= len(suffixes) {
 			return fmt.Sprintf("%.2f %s", size, suffixes[idx])
 		} else {
@@ -279,6 +279,4 @@ func FormatSize(size float64) string {
 			idx += 1
 		}
 	}
-
-	return ""
 }
