@@ -190,7 +190,7 @@ func UploadFile(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName st
 	modTime := info.ModTime().Format("2006-01-02 15:04:05")
 
 	exists := false
-	objectHeadResponse, err := s3Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
+	headObjectResponse, err := s3Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
 		Bucket: aws.String(bucketName),
 		Key:    aws.String(s3Key),
 	})
@@ -202,8 +202,8 @@ func UploadFile(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName st
 			fmt.Printf("Unable to retrieve s3 object metadata for key %s [%s]\n", s3Key, err.Error())
 			return
 		}
-	} else if !forceHashCheck && !objectHeadResponse.DeleteMarker && info.Size() == objectHeadResponse.ContentLength {
-		if val, ok := objectHeadResponse.Metadata["modified-timestamp"]; ok {
+	} else if !forceHashCheck && !headObjectResponse.DeleteMarker && info.Size() == headObjectResponse.ContentLength {
+		if val, ok := headObjectResponse.Metadata["modified-timestamp"]; ok {
 			exists = exists || (val == modTime)
 		}
 	}
@@ -219,8 +219,8 @@ func UploadFile(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName st
 		return
 	}
 
-	if objectHeadResponse != nil && !objectHeadResponse.DeleteMarker && info.Size() == objectHeadResponse.ContentLength {
-		if val, ok := objectHeadResponse.Metadata["sha256"]; ok {
+	if headObjectResponse != nil && !headObjectResponse.DeleteMarker && info.Size() == headObjectResponse.ContentLength {
+		if val, ok := headObjectResponse.Metadata["sha256"]; ok {
 			exists = exists || (val == *hash)
 		}
 	}
