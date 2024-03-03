@@ -263,7 +263,7 @@ func UploadFile(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName st
 
 			s3Body := NewProgressTrackingReader(f, func(totalRead int64, speed float32) {
 				percentDone := int(math.Floor(float64(100*totalRead) / float64(info.Size())))
-				fmt.Printf("\r[%s%s] %d %% (%s/%s)",
+				fmt.Printf("\r[%s%s] %d %% (%s/%s)   ",
 					strings.Repeat("=", percentDone),
 					strings.Repeat(" ", 100-percentDone),
 					percentDone,
