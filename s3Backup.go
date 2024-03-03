@@ -18,9 +18,12 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"runtime"
 	"strings"
 	"time"
 )
+
+var WindowsSystemFiles = []string{"$RECYCLE.BIN", "desktop.ini"}
 
 type ProgressFunc func(totalRead int64, speed float32)
 
@@ -144,6 +147,13 @@ func doBackup(s3Client *s3.Client, source string, destination string, forceHashC
 }
 
 func Upload(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName string, s3Key string, srcFile string, forceHashCheck bool) {
+	var ignoredNames = map[string]bool{}
+	if runtime.GOOS == "windows" {
+		for _, item := range WindowsSystemFiles {
+			ignoredNames[item] = true
+		}
+	}
+
 	if strings.HasPrefix(s3Key, "/") {
 		s3Key = s3Key[1:]
 	}
@@ -161,6 +171,8 @@ func Upload(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName string
 		}
 	} else if info.Mode()&os.ModeType != 0 {
 		fmt.Printf("%s is an irregular file. Skipping...\n", srcFile)
+	} else if _, ignoredName := ignoredNames[info.Name()]; ignoredName {
+		fmt.Printf("%s is a restricted file. Skipping...\n", srcFile)
 	} else {
 		fmt.Printf("Uploading %s to %s\n", srcFile, s3Key)
 
