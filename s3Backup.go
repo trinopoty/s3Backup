@@ -73,6 +73,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	var s3Client = CreateS3ClientFromArgs(awsProfilePtr, s3Accelerate)
+	var s3Host, s3Key, srcFile = SanitizePaths(flag.Arg(0), flag.Arg(1))
+
+	Upload(s3Client, manager.NewUploader(s3Client), s3Host, s3Key, srcFile, *forceHashCheck)
+}
+
+func CreateS3ClientFromArgs(awsProfilePtr *string, s3Accelerate *bool) *s3.Client {
 	var cfgOptions []func(*config.LoadOptions) error
 	if awsProfilePtr != nil && len(*awsProfilePtr) > 0 {
 		cfgOptions = []func(*config.LoadOptions) error{
@@ -94,11 +101,10 @@ func main() {
 		}
 	}
 
-	s3Client := s3.NewFromConfig(cfg, s3Options...)
-	doBackup(s3Client, flag.Arg(0), flag.Arg(1), *forceHashCheck)
+	return s3.NewFromConfig(cfg, s3Options...)
 }
 
-func doBackup(s3Client *s3.Client, source string, destination string, forceHashCheck bool) {
+func SanitizePaths(source string, destination string) (s3Bucket string, s3Key string, srcFile string) {
 	if !strings.HasPrefix(destination, "s3://") {
 		fmt.Println("Backup destination is not s3")
 		os.Exit(1)
@@ -120,11 +126,11 @@ func doBackup(s3Client *s3.Client, source string, destination string, forceHashC
 		os.Exit(1)
 	}
 
-	s3Key := s3Url.Path
+	s3Key = s3Url.Path
 
 	// If path ends with '/', target is inside the provided path, otherwise,
 	// target is the path itself
-	srcFile := source
+	srcFile = source
 
 	s3IsDir := strings.HasSuffix(s3Key, "/")
 	srcIsDir := strings.HasSuffix(srcFile, "/")
@@ -143,7 +149,7 @@ func doBackup(s3Client *s3.Client, source string, destination string, forceHashC
 		}
 	}
 
-	Upload(s3Client, manager.NewUploader(s3Client), s3Url.Host, s3Key, srcFile, forceHashCheck)
+	return s3Url.Host, s3Key, srcFile
 }
 
 func Upload(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName string, s3Key string, srcFile string, forceHashCheck bool) {
@@ -174,90 +180,94 @@ func Upload(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName string
 	} else if _, ignoredName := ignoredNames[info.Name()]; ignoredName {
 		fmt.Printf("%s is a restricted file. Skipping...\n", srcFile)
 	} else {
-		fmt.Printf("Uploading %s to %s\n", srcFile, s3Key)
+		UploadFile(s3Client, s3Uploader, bucketName, s3Key, srcFile, forceHashCheck, info)
+	}
+}
 
-		modTime := info.ModTime().Format("2006-01-02 15:04:05")
+func UploadFile(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName string, s3Key string, srcFile string, forceHashCheck bool, info os.FileInfo) {
+	fmt.Printf("Uploading %s to %s\n", srcFile, s3Key)
 
-		exists := false
-		objectHeadResponse, err := s3Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
-			Bucket: aws.String(bucketName),
-			Key:    aws.String(s3Key),
+	modTime := info.ModTime().Format("2006-01-02 15:04:05")
+
+	exists := false
+	objectHeadResponse, err := s3Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(s3Key),
+	})
+	if err != nil {
+		var oe *smithy.OperationError
+		var s3Err *http.ResponseError
+
+		if !errors.As(err, &oe) || !errors.As(oe.Err, &s3Err) || s3Err.Response.StatusCode != 404 {
+			fmt.Printf("Unable to retrieve s3 object metadata for key %s [%s]\n", s3Key, err.Error())
+			return
+		}
+	} else if !forceHashCheck && !objectHeadResponse.DeleteMarker && info.Size() == objectHeadResponse.ContentLength {
+		if val, ok := objectHeadResponse.Metadata["modified-timestamp"]; ok {
+			exists = exists || (val == modTime)
+		}
+	}
+
+	if exists {
+		fmt.Printf("%s already exists. Skipping...\n", s3Key)
+		return
+	}
+
+	err, hash := GetFileHash(srcFile)
+	if err != nil {
+		fmt.Println(err.Error())
+		return
+	}
+
+	if objectHeadResponse != nil && !objectHeadResponse.DeleteMarker && info.Size() == objectHeadResponse.ContentLength {
+		if val, ok := objectHeadResponse.Metadata["sha256"]; ok {
+			exists = exists || (val == *hash)
+		}
+	}
+
+	metadata := make(map[string]string)
+	metadata["modified-timestamp"] = modTime
+	metadata["sha256"] = *hash
+
+	if exists {
+		// Update metadata
+		fmt.Printf("%s already exists. Updating metadata...\n", s3Key)
+		_, err = s3Client.CopyObject(context.TODO(), &s3.CopyObjectInput{
+			Bucket:     aws.String(bucketName),
+			CopySource: aws.String(s3Key),
+			Key:        aws.String(s3Key),
+			Metadata:   metadata,
 		})
 		if err != nil {
-			var oe *smithy.OperationError
-			var s3Err *http.ResponseError
-
-			if !errors.As(err, &oe) || !errors.As(oe.Err, &s3Err) || s3Err.Response.StatusCode != 404 {
-				fmt.Printf("Unable to retrieve s3 object metadata for key %s [%s]\n", s3Key, err.Error())
-				return
-			}
-		} else if !forceHashCheck && !objectHeadResponse.DeleteMarker && info.Size() == objectHeadResponse.ContentLength {
-			if val, ok := objectHeadResponse.Metadata["modified-timestamp"]; ok {
-				exists = exists || (val == modTime)
-			}
+			fmt.Printf("Unable to update metadata for %s\n", s3Key)
 		}
-
-		if exists {
-			fmt.Printf("%s already exists. Skipping...\n", s3Key)
-			return
-		}
-
-		err, hash := GetFileHash(srcFile)
-		if err != nil {
-			fmt.Println(err.Error())
-			return
-		}
-
-		if objectHeadResponse != nil && !objectHeadResponse.DeleteMarker && info.Size() == objectHeadResponse.ContentLength {
-			if val, ok := objectHeadResponse.Metadata["sha256"]; ok {
-				exists = exists || (val == *hash)
-			}
-		}
-
-		metadata := make(map[string]string)
-		metadata["modified-timestamp"] = modTime
-		metadata["sha256"] = *hash
-
-		if exists {
-			// Update metadata
-			fmt.Printf("%s already exists. Updating metadata...\n", s3Key)
-			_, err = s3Client.CopyObject(context.TODO(), &s3.CopyObjectInput{
-				Bucket:     aws.String(bucketName),
-				CopySource: aws.String(s3Key),
-				Key:        aws.String(s3Key),
-				Metadata:   metadata,
-			})
-			if err != nil {
-				fmt.Printf("Unable to update metadata for %s\n", s3Key)
-			}
+	} else {
+		// Upload file
+		if f, err := os.Open(srcFile); err != nil {
+			fmt.Printf("Unable to open file %s\n", srcFile)
 		} else {
-			// Upload file
-			if f, err := os.Open(srcFile); err != nil {
-				fmt.Printf("Unable to open file %s\n", srcFile)
-			} else {
-				defer f.Close()
+			defer f.Close()
 
-				s3Body := NewProgressTrackingReader(f, func(totalRead int64, speed float32) {
-					percentDone := int(math.Floor(float64(100*totalRead) / float64(info.Size())))
-					fmt.Printf("\r[%s%s] %d %% (%s/%s)",
-						strings.Repeat("=", percentDone),
-						strings.Repeat(" ", 100-percentDone),
-						percentDone,
-						FormatSize(float64(totalRead)),
-						FormatSize(float64(info.Size())))
-				})
+			s3Body := NewProgressTrackingReader(f, func(totalRead int64, speed float32) {
+				percentDone := int(math.Floor(float64(100*totalRead) / float64(info.Size())))
+				fmt.Printf("\r[%s%s] %d %% (%s/%s)",
+					strings.Repeat("=", percentDone),
+					strings.Repeat(" ", 100-percentDone),
+					percentDone,
+					FormatSize(float64(totalRead)),
+					FormatSize(float64(info.Size())))
+			})
 
-				_, err := s3Uploader.Upload(context.TODO(), &s3.PutObjectInput{
-					Bucket:   aws.String(bucketName),
-					Key:      aws.String(s3Key),
-					Body:     s3Body,
-					Metadata: metadata,
-				})
+			_, err := s3Uploader.Upload(context.TODO(), &s3.PutObjectInput{
+				Bucket:   aws.String(bucketName),
+				Key:      aws.String(s3Key),
+				Body:     s3Body,
+				Metadata: metadata,
+			})
 
-				fmt.Printf("\n")
-				if err != nil {
-					fmt.Printf("Unable to upload %s\n", srcFile)
-				}
+			fmt.Printf("\n")
+			if err != nil {
+				fmt.Printf("Unable to upload %s\n", srcFile)
 			}
 		}
 	}
