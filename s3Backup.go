@@ -26,22 +26,41 @@ import (
 
 var WindowsSystemFiles = []string{"$RECYCLE.BIN", "desktop.ini"}
 
-type ProgressFunc func(totalRead int64, speed float32)
+func FormatSize(size float64) string {
+	suffixes := []string{"B", "KB", "MB", "GB", "TB"}
+	idx := 0
+
+	for {
+		if size < 1024 || (idx+1) >= len(suffixes) {
+			return fmt.Sprintf("%.2f %s", size, suffixes[idx])
+		} else {
+			size /= 1024
+			idx += 1
+		}
+	}
+}
 
 type ProgressTrackingReader struct {
 	io.ReadCloser
 
+	totalSize       int64
 	currentPosition int64
 	lastRead        int
 	lastReadAt      int64
-	ReportCallback  ProgressFunc
 }
 
 func (pr *ProgressTrackingReader) ReportProgress() {
 	pr.currentPosition += int64(pr.lastRead)
 	pr.lastRead = 0
 	pr.lastReadAt = time.Now().UnixMilli()
-	pr.ReportCallback(pr.currentPosition, 0)
+
+	percentDone := int(math.Floor(float64(100*pr.currentPosition) / float64(pr.totalSize)))
+	fmt.Printf("\r[%s%s] %d %% (%s/%s)   ",
+		strings.Repeat("=", percentDone),
+		strings.Repeat(" ", 100-percentDone),
+		percentDone,
+		FormatSize(float64(pr.currentPosition)),
+		FormatSize(float64(pr.totalSize)))
 }
 
 func (pr *ProgressTrackingReader) Read(buff []byte) (int, error) {
@@ -59,8 +78,8 @@ func (pr *ProgressTrackingReader) Close() error {
 	return pr.ReadCloser.Close()
 }
 
-func NewProgressTrackingReader(file *os.File, report ProgressFunc) *ProgressTrackingReader {
-	return &ProgressTrackingReader{file, 0, 0, 0, report}
+func NewProgressTrackingReader(file *os.File, totalSize int64) *ProgressTrackingReader {
+	return &ProgressTrackingReader{file, totalSize, 0, 0, 0}
 }
 
 func main() {
@@ -261,16 +280,7 @@ func UploadFile(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName st
 		} else {
 			defer f.Close()
 
-			s3Body := NewProgressTrackingReader(f, func(totalRead int64, speed float32) {
-				percentDone := int(math.Floor(float64(100*totalRead) / float64(info.Size())))
-				fmt.Printf("\r[%s%s] %d %% (%s/%s)   ",
-					strings.Repeat("=", percentDone),
-					strings.Repeat(" ", 100-percentDone),
-					percentDone,
-					FormatSize(float64(totalRead)),
-					FormatSize(float64(info.Size())))
-			})
-
+			s3Body := NewProgressTrackingReader(f, info.Size())
 			_, err := s3Uploader.Upload(context.TODO(), &s3.PutObjectInput{
 				Bucket:   aws.String(bucketName),
 				Key:      aws.String(s3Key),
@@ -313,20 +323,6 @@ func GetFileHash(file string) (*string, error) {
 		} else {
 			hash := fmt.Sprintf("%x", hash.Sum(nil))
 			return &hash, nil
-		}
-	}
-}
-
-func FormatSize(size float64) string {
-	suffixes := []string{"B", "KB", "MB", "GB", "TB"}
-	idx := 0
-
-	for {
-		if size < 1024 || (idx+1) >= len(suffixes) {
-			return fmt.Sprintf("%.2f %s", size, suffixes[idx])
-		} else {
-			size /= 1024
-			idx += 1
 		}
 	}
 }
