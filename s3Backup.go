@@ -44,6 +44,9 @@ func FormatSize(size float64) string {
 type ProgressTrackingReader struct {
 	io.ReadCloser
 
+	ShowSpeed    bool
+	PrefixString string
+
 	totalSize       int64
 	currentPosition int64
 	lastRead        int
@@ -56,12 +59,22 @@ func (pr *ProgressTrackingReader) ReportProgress() {
 	pr.lastReadAt = time.Now().UnixMilli()
 
 	percentDone := int(math.Floor(float64(100*pr.currentPosition) / float64(pr.totalSize)))
-	fmt.Printf("\r[%s%s] %d %% (%s/%s)   ",
-		strings.Repeat("=", percentDone),
-		strings.Repeat(" ", 100-percentDone),
-		percentDone,
-		FormatSize(float64(pr.currentPosition)),
-		FormatSize(float64(pr.totalSize)))
+
+	if pr.ShowSpeed {
+		fmt.Printf("\r%s[%s%s] %d %% (%s/%s)   ",
+			pr.PrefixString,
+			strings.Repeat("=", percentDone),
+			strings.Repeat(" ", 100-percentDone),
+			percentDone,
+			FormatSize(float64(pr.currentPosition)),
+			FormatSize(float64(pr.totalSize)))
+	} else {
+		fmt.Printf("\r%s[%s%s] %d %%   ",
+			pr.PrefixString,
+			strings.Repeat("=", percentDone),
+			strings.Repeat(" ", 100-percentDone),
+			percentDone)
+	}
 }
 
 func (pr *ProgressTrackingReader) Read(buff []byte) (int, error) {
@@ -80,7 +93,7 @@ func (pr *ProgressTrackingReader) Close() error {
 }
 
 func NewProgressTrackingReader(file *os.File, totalSize int64) *ProgressTrackingReader {
-	return &ProgressTrackingReader{file, totalSize, 0, 0, 0}
+	return &ProgressTrackingReader{file, true, "", totalSize, 0, 0, 0}
 }
 
 func main() {
@@ -249,7 +262,7 @@ func UploadFile(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName st
 		return
 	}
 
-	hash, err := GetFileHash(srcFile)
+	hash, err := GetFileHash(srcFile, info)
 	if err != nil {
 		fmt.Println(err.Error())
 		return
@@ -286,6 +299,8 @@ func UploadFile(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName st
 			defer f.Close()
 
 			s3Body := NewProgressTrackingReader(f, info.Size())
+			s3Body.PrefixString = "Uploading "
+
 			_, err := s3Uploader.Upload(context.TODO(), &s3.PutObjectInput{
 				Bucket:   aws.String(bucketName),
 				Key:      aws.String(s3Key),
@@ -316,14 +331,17 @@ func UploadFile(s3Client *s3.Client, s3Uploader *manager.Uploader, bucketName st
 	}
 }
 
-func GetFileHash(file string) (*string, error) {
+func GetFileHash(file string, info os.FileInfo) (*string, error) {
 	if f, err := os.Open(file); err != nil {
 		return nil, errors.New(fmt.Sprintf("Unable to open file %s\n", file))
 	} else {
 		defer f.Close()
 
+		fileBody := NewProgressTrackingReader(f, info.Size())
+		fileBody.PrefixString = "Hashing "
+
 		hash := sha256.New()
-		if _, err := io.Copy(hash, f); err != nil {
+		if _, err := io.Copy(hash, fileBody); err != nil {
 			return nil, errors.New(fmt.Sprintf("Unable to read file %s", file))
 		} else {
 			hash := fmt.Sprintf("%x", hash.Sum(nil))
